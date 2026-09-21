@@ -104,6 +104,11 @@ impl ProbeClusterConfig {
         self.cluster
     }
 
+    pub(crate) fn capped(mut self, limit: Bitrate) -> Self {
+        self.target_bitrate = self.target_bitrate.min(limit);
+        self
+    }
+
     /// Get the target bitrate.
     pub fn target_bitrate(&self) -> Bitrate {
         self.target_bitrate

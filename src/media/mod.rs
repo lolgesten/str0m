@@ -461,6 +461,10 @@ impl Media {
         })
     }
 
+    pub(crate) fn discard_queued_frames(&mut self) {
+        self.to_payload.clear();
+    }
+
     fn set_to_payload(&mut self, to_payload: ToPayload) -> Result<(), RtcError> {
         if self.to_payload.len() > 100 {
             return Err(RtcError::WriteWithoutPoll);

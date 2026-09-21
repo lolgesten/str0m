@@ -31,6 +31,12 @@ impl PacerImpl {
         PacerImpl::Null(NullPacer::default())
     }
 
+    pub(crate) fn cancel_probes(&mut self) {
+        if let Self::LeakyBucket(pacer) = self {
+            pacer.cancel_probes();
+        }
+    }
+
     pub fn start_probe(&mut self, config: ProbeClusterConfig) {
         match self {
             PacerImpl::Null(_) => {

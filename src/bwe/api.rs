@@ -40,6 +40,18 @@ impl<'a> Bwe<'a> {
         self.0.session.set_bwe_desired_bitrate(desired_bitrate);
     }
 
+    /// Limit the target bitrate of padding probes and idle padding.
+    ///
+    /// `Some(Bitrate::ZERO)` disables padding probes; `None` restores the
+    /// default policy. Lowering the limit cancels active and queued probe
+    /// clusters and pending padding. This does not cap media pacing or revoke
+    /// packets already returned by [`Rtc::poll_output`][crate::Rtc::poll_output].
+    /// Packet granularity and probe minimum packet counts can exceed this
+    /// target over very short intervals.
+    pub fn set_probe_limit(&mut self, limit: Option<Bitrate>) {
+        self.0.session.set_probe_limit(limit, self.0.last_now);
+    }
+
     /// Reset the BWE with a new init_bitrate
     ///
     /// # Example

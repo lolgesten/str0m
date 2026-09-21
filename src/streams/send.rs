@@ -1203,6 +1203,10 @@ impl StreamTx {
         }
     }
 
+    pub(crate) fn discard_padding(&mut self) {
+        self.padding = 0;
+    }
+
     pub(crate) fn reset_buffers(&mut self) {
         self.send_queue.clear();
         self.queue_info = None;

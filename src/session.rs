@@ -93,6 +93,7 @@ pub(crate) struct Session {
     max_rx_seq_lookup: HashMap<Ssrc, SeqNo>,
 
     bwe: Option<Bwe>,
+    probe_limit: Option<Bitrate>,
 
     enable_twcc_feedback: bool,
 
@@ -199,6 +200,7 @@ impl Session {
             twcc_tx_register: TwccSendRegister::new(1000),
             max_rx_seq_lookup: HashMap::new(),
             bwe,
+            probe_limit: None,
             enable_twcc_feedback: false,
             pacer,
             pacer_control: PacerControl::new(),
@@ -352,9 +354,15 @@ impl Session {
 
         // We can only run probes after first packet is sent and there
         // are any queues that can handle padding requests.
-        let do_probe = self.packet_first_sent && self.pacer.has_padding_queue();
+        let do_probe = self.packet_first_sent
+            && self.pacer.has_padding_queue()
+            && self.probe_limit != Some(Bitrate::ZERO);
 
         if let Some(probe_config) = bwe.handle_timeout(now, do_probe) {
+            let probe_config = self
+                .probe_limit
+                .map(|limit| probe_config.capped(limit))
+                .unwrap_or(probe_config);
             // Only start the probe in the pacer if the estimator accepted it.
             if bwe.start_probe(probe_config, now) {
                 #[cfg(feature = "_internal_test_exports")]
@@ -1151,6 +1159,22 @@ impl Session {
         snapshot.ingress_loss_fraction = self.twcc_rx_register.loss();
     }
 
+    pub(crate) fn set_probe_limit(&mut self, limit: Option<Bitrate>, now: Instant) {
+        let lowered = limit.is_some_and(|limit| self.probe_limit.is_none_or(|old| limit < old));
+        self.probe_limit = limit;
+        if lowered {
+            if let Some(bwe) = self.bwe.as_mut() {
+                bwe.handle_timeout(now, false);
+            }
+            self.pacer.cancel_probes();
+            for stream in self.streams.streams_tx() {
+                stream.discard_padding();
+            }
+        }
+        self.configure_pacer();
+        self.update_queue_state(now);
+    }
+
     pub fn set_bwe_desired_bitrate(&mut self, desired_bitrate: Bitrate) {
         if let Some(bwe) = self.bwe.as_mut() {
             bwe.set_desired_bitrate(desired_bitrate);
@@ -1177,6 +1201,22 @@ impl Session {
         &self.medias
     }
 
+    pub(crate) fn discard_queued_media(&mut self, mid: Mid, now: Instant) -> bool {
+        let Some(media) = self.media_by_mid_mut(mid) else {
+            return false;
+        };
+        media.discard_queued_frames();
+        for stream in self
+            .streams
+            .streams_tx()
+            .filter(|stream| stream.mid() == mid)
+        {
+            stream.reset_buffers();
+        }
+        self.update_queue_state(now);
+        true
+    }
+
     pub fn remove_media(&mut self, mid: Mid) {
         self.medias.retain(|media| media.mid() != mid);
         self.streams.remove_streams_by_mid(mid);
@@ -1200,7 +1240,11 @@ impl Session {
             .pacer_control
             .calculate(has_active_media, current_estimate, is_overuse);
 
-        self.pacer.set_padding_rate(result.padding_rate);
+        self.pacer.set_padding_rate(
+            self.probe_limit
+                .map(|limit| result.padding_rate.min(limit))
+                .unwrap_or(result.padding_rate),
+        );
         self.pacer.set_pacing_rate(result.pacing_rate);
     }
 

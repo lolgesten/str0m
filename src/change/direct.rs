@@ -328,6 +328,23 @@ impl<'a> DirectApi<'a> {
         stream
     }
 
+    /// Discard pending outgoing media and retransmission data for a media section.
+    ///
+    /// This drops frames waiting for packetization, unsent RTP, queued resends,
+    /// cached retransmission payloads, and pending padding on all of the media's
+    /// send streams. It preserves stream SSRCs, sequence counters, and SRTP state.
+    /// The caller must resume dependent video with a fresh keyframe.
+    ///
+    /// Already returned [`Output::Transmit`][crate::Output::Transmit] packets are
+    /// owned by the application and cannot be recalled. Future BWE probes may
+    /// still generate padding; use [`Rtc::bwe`][crate::Rtc::bwe] to adjust demand.
+    /// Returns false if the media section does not exist.
+    pub fn discard_queued_media(&mut self, mid: Mid) -> bool {
+        self.rtc
+            .session
+            .discard_queued_media(mid, self.rtc.last_now)
+    }
+
     /// Remove the transmit stream for the given SSRC.
     ///
     /// Returns true if stream existed and was removed.
