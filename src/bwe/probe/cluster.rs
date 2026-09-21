@@ -334,6 +334,26 @@ mod test {
     }
 
     #[test]
+    fn capped_probe_can_finish_its_minimum_packet_count() {
+        let now = Instant::now();
+        let config = ProbeClusterConfig::new(7.into(), Bitrate::mbps(10), ProbeKind::Initial)
+            .capped(Bitrate::kbps(100));
+        let mut probe = ProbeClusterState::new(config);
+        let first = probe.next_packet(now).expect("initial padding request");
+        probe.record_packet(now, first);
+        assert!(!probe.is_complete(now));
+
+        // At this limit the byte budget fits in one packet, but the cluster
+        // still needs five packets. It must be able to request the remainder.
+        let later = now + Duration::from_secs(1);
+        assert!(probe.should_send_now(later));
+        assert!(
+            probe.next_packet(later).is_some(),
+            "a capped probe must be able to finish its minimum packet count"
+        );
+    }
+
+    #[test]
     fn capped_probe_preserves_identity_and_timing_but_bounds_bytes() {
         let config = ProbeClusterConfig::new(7.into(), Bitrate::mbps(10), ProbeKind::Initial)
             .with_duration(Duration::from_millis(100));
