@@ -501,6 +501,84 @@ mod test {
     use queue::{PacketKind, Queue, QueuedPacket};
     use std::time::{Duration, Instant};
 
+    fn run_capped_padding_probe(rate: Bitrate, coarse_timer: bool) -> (Duration, usize) {
+        use crate::bwe_::ProbeKind;
+        let start = Instant::now();
+        let mut now = start;
+        let mut queue = Queue::default();
+        let mut pacer = LeakyBucketPacer::new(Bitrate::kbps(100));
+        // Idle padding is disabled; an active probe still needs its own deadlines.
+        queue.register_send(MidRid(Mid::from("003"), None), start);
+        pacer.start_probe(ProbeClusterConfig::new(1.into(), rate, ProbeKind::Initial).capped(rate));
+        let mut bytes = 0;
+        for _ in 0..10000 {
+            queue.update_average_queue_time(now);
+            if let Some(request) = pacer.handle_timeout(now, queue.queue_state(now)) {
+                let mut remaining = request.padding;
+                while remaining > 0 {
+                    let size = remaining.min(240);
+                    let (header, payload_len, kind) = make_packet(0, size, PacketKind::Padding);
+                    queue.enqueue_packet(QueuedPacket {
+                        queued_at: now,
+                        header,
+                        payload_len,
+                        kind,
+                    });
+                    remaining -= size;
+                }
+            }
+            if let Some((midrid, _)) = pacer.poll_queue() {
+                let packet = queue.next_packet().unwrap();
+                bytes += packet.payload_len;
+                queue.register_send(midrid, now);
+                pacer.register_send(now, DataSize::bytes(packet.payload_len as i64), midrid);
+            }
+            if pacer.active_cluster().is_none() {
+                break;
+            }
+            let deadline = pacer
+                .poll_timeout()
+                .0
+                .unwrap()
+                .max(now + Duration::from_micros(1));
+            now = if coarse_timer {
+                let millis = deadline
+                    .duration_since(start)
+                    .as_nanos()
+                    .div_ceil(1_000_000);
+                start + Duration::from_millis(millis as u64)
+            } else {
+                deadline
+            };
+        }
+        assert!(pacer.active_cluster().is_none());
+        (now.duration_since(start), bytes)
+    }
+
+    #[test]
+    fn capped_low_rate_probe_progresses_without_idle_padding() {
+        for coarse_timer in [false, true] {
+            let (elapsed, bytes) = run_capped_padding_probe(Bitrate::kbps(375), coarse_timer);
+            assert!(bytes >= 703);
+            assert!(
+                elapsed <= Duration::from_millis(30),
+                "375 kbps probe took {elapsed:?}, coarse={coarse_timer}"
+            );
+        }
+    }
+
+    #[test]
+    fn capped_high_rate_probe_progresses_with_millisecond_timers() {
+        for coarse_timer in [false, true] {
+            let (elapsed, bytes) = run_capped_padding_probe(Bitrate::mbps(5), coarse_timer);
+            assert!(bytes >= 9375);
+            assert!(
+                elapsed <= Duration::from_millis(17),
+                "5 Mbps probe took {elapsed:?}, coarse={coarse_timer}"
+            );
+        }
+    }
+
     #[test]
     fn capped_padding_probe_does_not_throttle_paced_media() {
         use crate::bwe_::ProbeKind;
