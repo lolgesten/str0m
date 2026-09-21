@@ -1361,6 +1361,31 @@ mod tests {
     use crate::io::DATAGRAM_MTU_TARGET;
 
     #[test]
+    fn lowering_probe_limit_cancels_active_clusters_without_resetting_media() {
+        use crate::bwe_::{ProbeClusterConfig, ProbeKind};
+        let now = Instant::now();
+        let config = RtcConfig::default().enable_bwe(Some(Bitrate::mbps(5)));
+        let mut session = Session::new(&config);
+        session.pacer.start_probe(ProbeClusterConfig::new(
+            1.into(),
+            Bitrate::mbps(10),
+            ProbeKind::Initial,
+        ));
+        let PacerImpl::LeakyBucket(pacer) = &session.pacer else {
+            panic!("BWE pacer");
+        };
+        assert!(pacer.active_cluster().is_some());
+        session.set_probe_limit(Some(Bitrate::kbps(100)), now);
+        let PacerImpl::LeakyBucket(pacer) = &session.pacer else {
+            panic!("BWE pacer");
+        };
+        assert!(pacer.active_cluster().is_none());
+        assert_eq!(session.probe_limit, Some(Bitrate::kbps(100)));
+        session.set_probe_limit(None, now);
+        assert!(session.probe_limit.is_none());
+    }
+
+    #[test]
     fn session_mtu_matches_config() {
         let cfg = RtcConfig::default();
         let s = Session::new(&cfg);

@@ -157,3 +157,57 @@ fn running_loop_blackout_discards_video_but_preserves_audio_and_stream_identity(
     );
     Ok(())
 }
+
+#[test]
+fn discarding_writer_backlog_preserves_the_next_rtp_sequence() -> Result<(), RtcError> {
+    use common::progress;
+    use str0m::Event;
+    init_crypto_default();
+    let now = Instant::now();
+    let (mut l, mut r) = connect_l_r_with_rtc(
+        Rtc::builder().build(now),
+        Rtc::builder().set_rtp_mode(true).build(now),
+    );
+    let mid = "aud".into();
+    let ssrc: Ssrc = 51.into();
+    l.direct_api().declare_media(mid, MediaKind::Audio);
+    l.direct_api().declare_stream_tx(ssrc, None, mid, None);
+    r.direct_api().declare_media(mid, MediaKind::Audio);
+    r.direct_api().expect_stream_rx(ssrc, None, mid, None);
+    let pt = l.params_opus().pt();
+    let at = l.last.max(r.last);
+    l.writer(mid)
+        .unwrap()
+        .write(pt, at, Duration::from_millis(20).into(), vec![0x22; 80])?;
+    while l.last.min(r.last) < at + Duration::from_millis(100) {
+        progress(&mut l, &mut r)?;
+    }
+    let at = l.last.max(r.last);
+    l.writer(mid)
+        .unwrap()
+        .write(pt, at, Duration::from_millis(40).into(), vec![0x11; 80])?;
+    assert!(l.direct_api().discard_queued_media(mid));
+    l.writer(mid)
+        .unwrap()
+        .write(pt, at, Duration::from_millis(60).into(), vec![0x33; 80])?;
+    while l.last.min(r.last) < at + Duration::from_millis(100) {
+        progress(&mut l, &mut r)?;
+    }
+    let packets: Vec<_> = r
+        .events
+        .iter()
+        .filter_map(|(_, e)| match e {
+            Event::RtpPacket(p) => Some(p),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(packets.len(), 2);
+    assert_eq!(packets[0].payload[0], 0x22);
+    assert_eq!(packets[1].payload[0], 0x33);
+    assert_eq!(
+        packets[1].header.sequence_number,
+        packets[0].header.sequence_number.wrapping_add(1)
+    );
+    assert!(!l.direct_api().discard_queued_media("unknown".into()));
+    Ok(())
+}

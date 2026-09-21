@@ -29,6 +29,8 @@ mod link_capacity_estimator;
 mod loss_controller;
 mod macros;
 mod probe;
+#[cfg(test)]
+pub(crate) use probe::ProbeKind;
 mod smoother;
 mod time;
 

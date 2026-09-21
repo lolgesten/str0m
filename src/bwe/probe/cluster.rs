@@ -334,6 +334,17 @@ mod test {
     }
 
     #[test]
+    fn capped_probe_preserves_identity_and_timing_but_bounds_bytes() {
+        let config = ProbeClusterConfig::new(7.into(), Bitrate::mbps(10), ProbeKind::Initial)
+            .with_duration(Duration::from_millis(100));
+        let capped = config.capped(Bitrate::kbps(100));
+        assert_eq!(capped.cluster(), config.cluster());
+        assert_eq!(capped.target_duration, config.target_duration);
+        assert_eq!(capped.target_bitrate(), Bitrate::kbps(100));
+        assert_eq!(capped.min_packet_count(), config.min_packet_count());
+    }
+
+    #[test]
     fn probe_cluster_not_complete_before_start() {
         let now = Instant::now();
         let config = ProbeClusterConfig::new(1.into(), Bitrate::mbps(3), ProbeKind::Initial);
