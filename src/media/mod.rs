@@ -103,6 +103,9 @@ pub struct Media {
     /// If this is empty, the m-line is disabled/rejected (port=0 in SDP).
     remote_pts: Vec<Pt>,
 
+    /// Direct API media uses the configured codecs without SDP negotiation.
+    direct_api: bool,
+
     /// Set when this m-line has been stopped via
     /// [`SdpApi::stop_media`](crate::change::SdpApi::stop_media) or
     /// rejected by the remote peer. Independent of `remote_pts` so that
@@ -565,7 +568,7 @@ impl Media {
         config
             .all_for_kind(self.kind)
             // Only consider negotiated PTs
-            .filter(|p| self.remote_pts.contains(&p.pt))
+            .filter(|p| self.direct_api || self.remote_pts.contains(&p.pt))
             // Map to the first PT found in payload params with RTX
             .find_map(|p| p.resend().map(|_| p.pt))
     }
@@ -603,6 +606,7 @@ impl Default for Media {
             msid: Msid::random(),
             kind: MediaKind::Video,
             remote_pts: vec![],
+            direct_api: false,
             stopped: false,
             remote_exts: ExtensionMap::empty(),
             remote_created: false,
@@ -683,6 +687,7 @@ impl Media {
             index,
             kind,
             dir: Direction::SendRecv,
+            direct_api: true,
             remote_exts: exts,
             ..Default::default()
         }

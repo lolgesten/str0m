@@ -1279,6 +1279,25 @@ mod test {
     use super::*;
 
     #[test]
+    fn direct_video_can_probe_before_its_first_media_packet() {
+        let mid = Mid::from("video");
+        let mut stream = StreamTx::new(42.into(), Some(43.into()), MidRid(mid, None), false, 1200);
+        let media = Media::from_direct_api(mid, 0, MediaKind::Video, ExtensionMap::empty());
+        stream.on_first_timeout(&media, &CodecConfig::new_with_defaults());
+        assert!(
+            stream.padding_enabled(),
+            "audio-only startup needs a video padding queue for bounded recovery probes"
+        );
+        let mut unnegotiated =
+            StreamTx::new(44.into(), Some(45.into()), MidRid(mid, None), false, 1200);
+        unnegotiated.on_first_timeout(&Media::default(), &CodecConfig::new_with_defaults());
+        assert!(
+            !unnegotiated.padding_enabled(),
+            "SDP still requires a negotiated payload type"
+        );
+    }
+
+    #[test]
     fn queue_info_is_cached_on_queue_state_update() {
         let mut stream = StreamTx::new(42.into(), None, MidRid(Mid::from("0"), None), false, 1200);
 
