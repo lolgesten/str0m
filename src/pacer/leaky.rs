@@ -298,11 +298,10 @@ impl LeakyBucketPacer {
         if let Some(queue) = non_empty_queue {
             if self.adjusted_bitrate > Bitrate::ZERO {
                 // Check if we're actively probing and should use probe-specific timing
-                let poll_at = if let Some(probe) = self
-                    .probe_queue
-                    .front()
-                    .filter(|probe| probe.config().target_bitrate() >= self.pacing_bitrate)
-                {
+                let poll_at = if let Some(probe) = self.probe_queue.front().filter(|probe| {
+                    !probe.config().is_capped()
+                        || probe.config().target_bitrate() >= self.pacing_bitrate
+                }) {
                     // During probe: use absolute time directly from probe state
                     (probe.next_probe_time(), PacerReason::Probe1)
                 } else {
@@ -329,7 +328,12 @@ impl LeakyBucketPacer {
         }
 
         let any_queue_for_padding = self.queue_states.iter().any(|q| q.use_for_padding);
-        let padding_possible = self.padding_bitrate > Bitrate::ZERO && any_queue_for_padding;
+        let capped_probe = self
+            .probe_queue
+            .front()
+            .is_some_and(|probe| probe.config().is_capped());
+        let padding_possible =
+            (self.padding_bitrate > Bitrate::ZERO || capped_probe) && any_queue_for_padding;
 
         if !padding_possible {
             return None;
@@ -337,7 +341,7 @@ impl LeakyBucketPacer {
 
         // If we're actively probing, use probe timing for padding
         if let Some(probe) = self.probe_queue.front() {
-            let next_probe_time = probe.next_probe_time();
+            let next_probe_time = probe.next_padding_time();
             // We explicitly don't return a queue to poll here. We need another call to
             // handle_timeout to request the padding before we can poll the selected queue.
             return Some(((next_probe_time, PacerReason::Probe2), None));
@@ -365,7 +369,11 @@ impl LeakyBucketPacer {
     fn maybe_update_adjusted_bitrate(&mut self, now: Instant) {
         // Use probe's target bitrate if actively probing, otherwise use pacing bitrate
         self.adjusted_bitrate = if let Some(probe) = self.probe_queue.front() {
-            probe.config().target_bitrate().max(self.pacing_bitrate)
+            if probe.config().is_capped() {
+                probe.config().target_bitrate().max(self.pacing_bitrate)
+            } else {
+                probe.config().target_bitrate()
+            }
         } else {
             self.pacing_bitrate
         };
@@ -478,6 +486,18 @@ impl LeakyBucketPacer {
     }
 
     fn request_immediate_timeout(&mut self) {
+        // An explicitly capped probe drains one bounded generated burst without
+        // requiring sub-millisecond sleeps. Queue snapshots still refresh between packets.
+        if self
+            .probe_queue
+            .front()
+            .is_some_and(|probe| probe.config().is_capped())
+        {
+            if let Some(now) = self.last_handle_time {
+                self.next_poll_time = Some((now, PacerReason::Immediate));
+                return;
+            }
+        }
         // Request timeout at the next microsecond to ensure time advances between packets.
         // We can't use already_happened() because that would cause the test harness to
         // set a very old timestamp, and while lib.rs prevents last_now from going backwards,
@@ -501,7 +521,11 @@ mod test {
     use queue::{PacketKind, Queue, QueuedPacket};
     use std::time::{Duration, Instant};
 
-    fn run_capped_padding_probe(rate: Bitrate, coarse_timer: bool) -> (Duration, usize) {
+    fn run_capped_padding_probe(
+        rate: Bitrate,
+        coarse_timer: bool,
+        with_audio: bool,
+    ) -> (Duration, usize) {
         use crate::bwe_::ProbeKind;
         let start = Instant::now();
         let mut now = start;
@@ -511,7 +535,20 @@ mod test {
         queue.register_send(MidRid(Mid::from("003"), None), start);
         pacer.start_probe(ProbeClusterConfig::new(1.into(), rate, ProbeKind::Initial).capped(rate));
         let mut bytes = 0;
+        let mut next_audio = start;
         for _ in 0..10000 {
+            if with_audio && now >= next_audio {
+                for _ in 0..2 {
+                    let (header, payload_len, kind) = make_packet(0, 100, PacketKind::Audio);
+                    queue.enqueue_packet(QueuedPacket {
+                        queued_at: now,
+                        header,
+                        payload_len,
+                        kind,
+                    });
+                }
+                next_audio += Duration::from_millis(20);
+            }
             queue.update_average_queue_time(now);
             if let Some(request) = pacer.handle_timeout(now, queue.queue_state(now)) {
                 let mut remaining = request.padding;
@@ -536,11 +573,10 @@ mod test {
             if pacer.active_cluster().is_none() {
                 break;
             }
-            let deadline = pacer
-                .poll_timeout()
-                .0
-                .unwrap()
-                .max(now + Duration::from_micros(1));
+            let mut deadline = pacer.poll_timeout().0.unwrap().max(now);
+            if with_audio {
+                deadline = deadline.min(next_audio);
+            }
             now = if coarse_timer {
                 let millis = deadline
                     .duration_since(start)
@@ -558,7 +594,8 @@ mod test {
     #[test]
     fn capped_low_rate_probe_progresses_without_idle_padding() {
         for coarse_timer in [false, true] {
-            let (elapsed, bytes) = run_capped_padding_probe(Bitrate::kbps(375), coarse_timer);
+            let (elapsed, bytes) =
+                run_capped_padding_probe(Bitrate::kbps(375), coarse_timer, false);
             assert!(bytes >= 703);
             assert!(
                 elapsed <= Duration::from_millis(30),
@@ -570,13 +607,41 @@ mod test {
     #[test]
     fn capped_high_rate_probe_progresses_with_millisecond_timers() {
         for coarse_timer in [false, true] {
-            let (elapsed, bytes) = run_capped_padding_probe(Bitrate::mbps(5), coarse_timer);
+            let (elapsed, bytes) = run_capped_padding_probe(Bitrate::mbps(5), coarse_timer, false);
             assert!(bytes >= 9375);
             assert!(
                 elapsed <= Duration::from_millis(17),
                 "5 Mbps probe took {elapsed:?}, coarse={coarse_timer}"
             );
         }
+    }
+
+    #[test]
+    fn capped_probe_progresses_with_unpaced_audio() {
+        for coarse_timer in [false, true] {
+            let (elapsed, bytes) = run_capped_padding_probe(Bitrate::mbps(5), coarse_timer, true);
+            assert!(bytes >= 9375);
+            assert!(elapsed <= Duration::from_millis(17));
+        }
+    }
+
+    #[test]
+    fn uncapped_probe_preserves_original_media_timing() {
+        use crate::bwe_::ProbeKind;
+        let now = Instant::now();
+        let mut queue = Queue::default();
+        let mut pacer = LeakyBucketPacer::new(Bitrate::mbps(1));
+        pacer.start_probe(ProbeClusterConfig::new(
+            1.into(),
+            Bitrate::kbps(1),
+            ProbeKind::Initial,
+        ));
+        for seq in 1..=2 {
+            enqueue_packet_noisy(&mut pacer, &mut queue, seq, 1000, PacketKind::Video, now);
+        }
+        assert_poll_success(&mut pacer, &mut queue, now, "first media packet", |_| {});
+        handle_timeout_noisy(&mut pacer, &mut queue, now + Duration::from_millis(100));
+        assert!(pacer.poll_queue().is_none());
     }
 
     #[test]

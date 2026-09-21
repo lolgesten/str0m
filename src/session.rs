@@ -358,7 +358,12 @@ impl Session {
             && self.pacer.has_padding_queue()
             && self.probe_limit != Some(Bitrate::ZERO);
 
-        if let Some(probe_config) = bwe.handle_timeout(now, do_probe) {
+        let probe_config = if self.probe_limit.is_some() {
+            bwe.handle_timeout_capped(now, do_probe)
+        } else {
+            bwe.handle_timeout(now, do_probe)
+        };
+        if let Some(probe_config) = probe_config {
             let probe_config = self
                 .probe_limit
                 .map(|limit| probe_config.capped(limit))
@@ -1164,7 +1169,7 @@ impl Session {
         self.probe_limit = limit;
         if lowered {
             if let Some(bwe) = self.bwe.as_mut() {
-                bwe.handle_timeout(now, false);
+                bwe.handle_timeout_capped(now, false);
             }
             self.pacer.cancel_probes();
             for stream in self.streams.streams_tx() {

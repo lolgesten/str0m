@@ -79,6 +79,19 @@ impl Bwe {
         result
     }
 
+    pub(crate) fn handle_timeout_capped(
+        &mut self,
+        now: Instant,
+        do_probe: bool,
+    ) -> Option<ProbeClusterConfig> {
+        let result = self.handle_timeout(now, do_probe);
+        if !do_probe {
+            // Explicit probe-limit transitions clear ProbeControl's estimate.
+            self.bwe.last_updated_estimate = None;
+        }
+        result
+    }
+
     pub fn start_probe(&mut self, config: ProbeClusterConfig, now: Instant) -> bool {
         self.bwe.start_probe(config, now)
     }
@@ -322,9 +335,6 @@ impl SendSideBandwidthEstimator {
         // If we can't probe, clear any pending/active probes
         if !do_probe {
             self.probe_estimator.clear_probes();
-            // Disabling ProbeControl clears its estimate. Repropagate even an
-            // unchanged estimate when probing becomes possible again.
-            self.last_updated_estimate = None;
         }
 
         self.probe_control.enable(do_probe);
@@ -487,5 +497,20 @@ impl fmt::Display for BandwidthUsage {
             BandwidthUsage::Normal => write!(f, "normal"),
             BandwidthUsage::Underuse => write!(f, "underuse"),
         }
+    }
+}
+
+#[cfg(test)]
+mod probe_limit_scope_tests {
+    use super::*;
+    #[test]
+    fn only_explicit_probe_limits_invalidate_unchanged_estimate_on_disable() {
+        let now = Instant::now();
+        let mut baseline = Bwe::new(Bitrate::kbps(500));
+        baseline.handle_timeout(now, false);
+        assert!(baseline.bwe.last_updated_estimate.is_some());
+        let mut capped = Bwe::new(Bitrate::kbps(500));
+        capped.handle_timeout_capped(now, false);
+        assert!(capped.bwe.last_updated_estimate.is_none());
     }
 }
