@@ -285,8 +285,14 @@ impl ProbeClusterState {
         // Calculate remaining bytes needed to complete the probe cluster.
         let bytes_remaining = self.config.target_bytes().saturating_sub(self.bytes_sent);
 
-        // Return the minimum of bytes_remaining and recommended_probe_size.
-        // When bytes_remaining is zero, this returns None (no more padding).
+        // A low bitrate can meet the byte target before the minimum packet count.
+        // Keep requesting one paced padding packet until both completion conditions
+        // are met. next_probe_time accounts for these bytes at the capped rate.
+        let bytes_remaining = if self.packets_sent < self.config.min_packet_count {
+            cmp::max(bytes_remaining, MAX_PADDING_PACKET_SIZE)
+        } else {
+            bytes_remaining
+        };
         let request_bytes = cmp::min(bytes_remaining, recommended_probe_size);
 
         if request_bytes == DataSize::ZERO {
