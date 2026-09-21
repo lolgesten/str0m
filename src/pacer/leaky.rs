@@ -297,7 +297,11 @@ impl LeakyBucketPacer {
         if let Some(queue) = non_empty_queue {
             if self.adjusted_bitrate > Bitrate::ZERO {
                 // Check if we're actively probing and should use probe-specific timing
-                let poll_at = if let Some(probe) = self.probe_queue.front() {
+                let poll_at = if let Some(probe) = self
+                    .probe_queue
+                    .front()
+                    .filter(|probe| probe.config().target_bitrate() >= self.pacing_bitrate)
+                {
                     // During probe: use absolute time directly from probe state
                     (probe.next_probe_time(), PacerReason::Probe1)
                 } else {
@@ -360,7 +364,7 @@ impl LeakyBucketPacer {
     fn maybe_update_adjusted_bitrate(&mut self, now: Instant) {
         // Use probe's target bitrate if actively probing, otherwise use pacing bitrate
         self.adjusted_bitrate = if let Some(probe) = self.probe_queue.front() {
-            probe.config().target_bitrate()
+            probe.config().target_bitrate().max(self.pacing_bitrate)
         } else {
             self.pacing_bitrate
         };
