@@ -1,5 +1,7 @@
 # Unreleased
 
+  * Add media queue revocation and configurable padding-probe limits #3
+
 # 0.23.1
 
   * Guard SRTP/SRTCP and RTCP parsing against malformed input #1029
