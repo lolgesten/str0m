@@ -1361,6 +1361,40 @@ mod tests {
     use crate::io::DATAGRAM_MTU_TARGET;
 
     #[test]
+    fn restoring_probe_limit_resumes_probing_without_a_new_bandwidth_estimate() {
+        let now = Instant::now();
+        let config = RtcConfig::default().enable_bwe(Some(Bitrate::mbps(1)));
+        let mut session = Session::new(&config);
+        session.set_bwe_desired_bitrate(Bitrate::mbps(5));
+        // The connection can already probe, and its bandwidth estimate is stable.
+        assert!(
+            session
+                .bwe
+                .as_mut()
+                .unwrap()
+                .handle_timeout(now, true)
+                .is_some()
+        );
+        let estimate = session.bwe.as_ref().unwrap().last_estimate();
+
+        session.set_probe_limit(Some(Bitrate::ZERO), now);
+        session.set_probe_limit(None, now);
+
+        // Restoring the policy must not require feedback that changes the estimate:
+        // discovering capacity is precisely what the resumed probes are for.
+        assert_eq!(session.bwe.as_ref().unwrap().last_estimate(), estimate);
+        assert!(
+            session
+                .bwe
+                .as_mut()
+                .unwrap()
+                .handle_timeout(now + Duration::from_secs(5), true)
+                .is_some(),
+            "restoring the probe policy must resume probing at a stable estimate"
+        );
+    }
+
+    #[test]
     fn lowering_probe_limit_cancels_active_clusters_without_resetting_media() {
         use crate::bwe_::{ProbeClusterConfig, ProbeKind};
         let now = Instant::now();
