@@ -497,6 +497,31 @@ mod test {
     use std::time::{Duration, Instant};
 
     #[test]
+    fn capped_padding_probe_does_not_throttle_paced_media() {
+        use crate::bwe_::ProbeKind;
+
+        let now = Instant::now();
+        let mut queue = Queue::default();
+        let mut pacer = LeakyBucketPacer::new(Bitrate::mbps(1));
+        // Session applies the padding-probe limit to the cluster before starting it.
+        let config = ProbeClusterConfig::new(1.into(), Bitrate::mbps(2), ProbeKind::Initial)
+            .capped(Bitrate::kbps(1));
+        pacer.start_probe(config);
+        for seq in 1..=2 {
+            enqueue_packet_noisy(&mut pacer, &mut queue, seq, 1_000, PacketKind::Video, now);
+        }
+        assert_poll_success(&mut pacer, &mut queue, now, "first media packet", |_| {});
+
+        // 1 Mbps easily drains a 1 kB packet in 100 ms. A padding-only cap must
+        // not instead hold the second media packet for the probe's 8 s interval.
+        handle_timeout_noisy(&mut pacer, &mut queue, now + duration_ms(100));
+        assert!(
+            pacer.poll_queue().is_some(),
+            "a padding probe limit must not throttle the normal media pacing rate"
+        );
+    }
+
+    #[test]
     fn test_typical_behavior() {
         let now = Instant::now();
         let mut queue = Queue::default();
