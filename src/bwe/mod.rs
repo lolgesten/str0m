@@ -322,6 +322,9 @@ impl SendSideBandwidthEstimator {
         // If we can't probe, clear any pending/active probes
         if !do_probe {
             self.probe_estimator.clear_probes();
+            // Disabling ProbeControl clears its estimate. Repropagate even an
+            // unchanged estimate when probing becomes possible again.
+            self.last_updated_estimate = None;
         }
 
         self.probe_control.enable(do_probe);
